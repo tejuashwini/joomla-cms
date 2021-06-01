@@ -836,3 +836,133 @@ class JDatabaseDriverMariaDB extends JDatabaseDriver
 	{
 		return mysqli_fetch_object($cursor ? $cursor : $this->cursor, $class);
 	}
+
+	/**
+	 * Method to free up the memory used for the result set.
+	 *
+	 * @param mixed $cursor The optional result set cursor from which to fetch the row.
+	 *
+	 * @return  void
+	 *
+	 * @since   3.0.0
+	 */
+	protected function freeResult($cursor = null)
+	{
+		mysqli_free_result($cursor ? $cursor : $this->cursor);
+
+		if ((!$cursor) || ($cursor === $this->cursor)) {
+			$this->cursor = null;
+		}
+	}
+
+	/**
+	 * Unlocks tables in the database.
+	 *
+	 * @return  JDatabaseDriverMysqli  Returns this object to support chaining.
+	 *
+	 * @throws  RuntimeException
+	 * @since   3.0.0
+	 */
+	public function unlockTables()
+	{
+		$this->setQuery('UNLOCK TABLES')->execute();
+
+		return $this;
+	}
+
+	/**
+	 * Internal function to check if profiling is available
+	 *
+	 * @return  boolean
+	 *
+	 * @since   3.1.3
+	 */
+	private function hasProfiling()
+	{
+		try {
+			$res = mysqli_query($this->connection, "SHOW VARIABLES LIKE 'have_profiling'");
+			$row = mysqli_fetch_assoc($res);
+
+			return isset($row);
+		} catch (Exception $e) {
+			return false;
+		}
+	}
+
+	/**
+	 * Internal function to check if query cache is enabled.
+	 *
+	 * @return  boolean
+	 *
+	 * @since   3.9.25
+	 */
+	private function hasQueryCacheEnabled()
+	{
+		try {
+			$res = mysqli_query($this->connection, "SHOW VARIABLES LIKE 'query_cache_type'");
+			$row = mysqli_fetch_assoc($res);
+
+			return isset($row['Value']) && $row['Value'] === 'ON';
+		} catch (Exception $e) {
+			return false;
+		}
+	}
+
+	/**
+	 * Does the database server claim to have support for UTF-8 Multibyte (utf8mb4) collation?
+	 *
+	 * libmysql supports utf8mb4 since 5.5.3 (same version as the MySQL server). mysqlnd supports utf8mb4 since 5.0.9.
+	 *
+	 * @return  boolean
+	 *
+	 * @since   CMS 3.5.0
+	 */
+	private function serverClaimsUtf8mb4Support()
+	{
+		$client_version = mysqli_get_client_info();
+		$server_version = $this->getVersion();
+
+		if (version_compare($server_version, '5.5.3', '<')) {
+			return false;
+		} else {
+			if (strpos($client_version, 'mysqlnd') !== false) {
+				$client_version = preg_replace('/^\D+([\d.]+).*/', '$1', $client_version);
+
+				return version_compare($client_version, '5.0.9', '>=');
+			} else {
+				return version_compare($client_version, '5.5.3', '>=');
+			}
+		}
+	}
+
+	/**
+	 * Return the actual SQL Error number
+	 *
+	 * @return  integer  The SQL Error number
+	 *
+	 * @since   3.4.6
+	 */
+	protected function getErrorNumber()
+	{
+		return (int)mysqli_errno($this->connection);
+	}
+
+	/**
+	 * Return the actual SQL Error message
+	 *
+	 * @return  string  The SQL Error message
+	 *
+	 * @since   3.4.6
+	 */
+	protected function getErrorMessage()
+	{
+		$errorMessage = (string)mysqli_error($this->connection);
+
+		// Replace the Databaseprefix with `#__` if we are not in Debug
+		if (!$this->debug) {
+			$errorMessage = str_replace($this->tablePrefix, '#__', $errorMessage);
+		}
+
+		return $errorMessage;
+	}
+}
