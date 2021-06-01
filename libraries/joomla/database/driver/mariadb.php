@@ -437,3 +437,402 @@ class JDatabaseDriverMariaDB extends JDatabaseDriver
 
 		return $result;
 	}
+/**
+	 * Get the details list of keys for a table.
+	 *
+	 * @param string $table The name of the table.
+	 *
+	 * @return  array  An array of the column specification for the table.
+	 *
+	 * @throws  RuntimeException
+	 * @since   3.0.1
+	 */
+	public function getTableKeys($table)
+	{
+		$this->connect();
+
+		// Get the details columns information.
+		$this->setQuery('SHOW KEYS FROM ' . $this->quoteName($table));
+		$keys = $this->loadObjectList();
+
+		return $keys;
+	}
+
+	/**
+	 * Method to get an array of all tables in the database.
+	 *
+	 * @return  array  An array of all the tables in the database.
+	 *
+	 * @throws  RuntimeException
+	 * @since   3.0.1
+	 */
+	public function getTableList()
+	{
+		$this->connect();
+
+		// Set the query to get the tables statement.
+		$this->setQuery('SHOW TABLES');
+		$tables = $this->loadColumn();
+
+		return $tables;
+	}
+
+	/**
+	 * Get the version of the database connector.
+	 *
+	 * @return  string  The database connector version.
+	 *
+	 * @since   3.0.0
+	 */
+	public function getVersion()
+	{
+		$this->connect();
+
+		return mysqli_get_server_info($this->connection);
+	}
+
+	/**
+	 * Method to get the auto-incremented value from the last INSERT statement.
+	 *
+	 * @return  mixed  The value of the auto-increment field from the last inserted row.
+	 *                 If the value is greater than maximal int value, it will return a string.
+	 *
+	 * @since   3.0.0
+	 */
+	public function insertid()
+	{
+		$this->connect();
+
+		return mysqli_insert_id($this->connection);
+	}
+
+	/**
+	 * Locks a table in the database.
+	 *
+	 * @param string $table The name of the table to unlock.
+	 *
+	 * @return  JDatabaseDriverMysqli  Returns this object to support chaining.
+	 *
+	 * @throws  RuntimeException
+	 * @since   3.0.1
+	 */
+	public function lockTable($table)
+	{
+		$this->setQuery('LOCK TABLES ' . $this->quoteName($table) . ' WRITE')->execute();
+
+		return $this;
+	}
+
+	/**
+	 * Execute the SQL statement.
+	 *
+	 * @return  mixed  A database cursor resource on success, boolean false on failure.
+	 *
+	 * @throws  RuntimeException
+	 * @since   3.0.0
+	 */
+	public function execute()
+	{
+		$this->connect();
+
+		// Take a local copy so that we don't modify the original query and cause issues later
+		$query = $this->replacePrefix((string)$this->sql);
+
+		if (!($this->sql instanceof JDatabaseQuery) && ($this->limit > 0 || $this->offset > 0)) {
+			$query .= ' LIMIT ' . $this->offset . ', ' . $this->limit;
+		}
+
+		if (!is_object($this->connection)) {
+			JLog::add(JText::sprintf('JLIB_DATABASE_QUERY_FAILED', $this->errorNum, $this->errorMsg), JLog::ERROR, 'database');
+			throw new JDatabaseExceptionExecuting($query, $this->errorMsg, $this->errorNum);
+		}
+
+		// Increment the query counter.
+		$this->count++;
+
+		// Reset the error values.
+		$this->errorNum = 0;
+		$this->errorMsg = '';
+		$memoryBefore = null;
+
+		// If debugging is enabled then let's log the query.
+		if ($this->debug) {
+			// Add the query to the object queue.
+			$this->log[] = $query;
+
+			JLog::add($query, JLog::DEBUG, 'databasequery');
+
+			$this->timings[] = microtime(true);
+
+			if (is_object($this->cursor)) {
+				// Avoid warning if result already freed by third-party library
+				@$this->freeResult();
+			}
+
+			$memoryBefore = memory_get_usage();
+		}
+
+		// Execute the query. Error suppression is used here to prevent warnings/notices that the connection has been lost.
+		$this->cursor = @mysqli_query($this->connection, $query);
+
+		if ($this->debug) {
+			$this->timings[] = microtime(true);
+
+			if (defined('DEBUG_BACKTRACE_IGNORE_ARGS')) {
+				$this->callStacks[] = debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS);
+			} else {
+				$this->callStacks[] = debug_backtrace();
+			}
+
+			$this->callStacks[count($this->callStacks) - 1][0]['memory'] = array(
+				$memoryBefore,
+				memory_get_usage(),
+				is_object($this->cursor) ? $this->getNumRows() : null,
+			);
+		}
+
+		// If an error occurred handle it.
+		if (!$this->cursor) {
+			// Get the error number and message before we execute any more queries.
+			$this->errorNum = $this->getErrorNumber();
+			$this->errorMsg = $this->getErrorMessage();
+
+			// Check if the server was disconnected.
+			if (!$this->connected()) {
+				try {
+					// Attempt to reconnect.
+					$this->connection = null;
+					$this->connect();
+				} // If connect fails, ignore that exception and throw the normal exception.
+				catch (RuntimeException $e) {
+					// Get the error number and message.
+					$this->errorNum = $this->getErrorNumber();
+					$this->errorMsg = $this->getErrorMessage();
+
+					JLog::add(JText::sprintf('JLIB_DATABASE_QUERY_FAILED', $this->errorNum, $this->errorMsg), JLog::ERROR, 'database-error');
+
+					throw new JDatabaseExceptionExecuting($query, $this->errorMsg, $this->errorNum, $e);
+				}
+
+				// Since we were able to reconnect, run the query again.
+				return $this->execute();
+			} // The server was not disconnected.
+			else {
+				JLog::add(JText::sprintf('JLIB_DATABASE_QUERY_FAILED', $this->errorNum, $this->errorMsg), JLog::ERROR, 'database-error');
+
+				throw new JDatabaseExceptionExecuting($query, $this->errorMsg, $this->errorNum);
+			}
+		}
+
+		return $this->cursor;
+	}
+
+	/**
+	 * Renames a table in the database.
+	 *
+	 * @param string $oldTable The name of the table to be renamed
+	 * @param string $newTable The new name for the table.
+	 * @param string $backup Not used by MySQL.
+	 * @param string $prefix Not used by MySQL.
+	 *
+	 * @return  JDatabaseDriverMysqli  Returns this object to support chaining.
+	 *
+	 * @throws  RuntimeException
+	 * @since   3.0.1
+	 */
+	public function renameTable($oldTable, $newTable, $backup = null, $prefix = null)
+	{
+		$this->setQuery('RENAME TABLE ' . $oldTable . ' TO ' . $newTable)->execute();
+
+		return $this;
+	}
+
+	/**
+	 * Select a database for use.
+	 *
+	 * @param string $database The name of the database to select for use.
+	 *
+	 * @return  boolean  True if the database was successfully selected.
+	 *
+	 * @throws  RuntimeException
+	 * @since   3.0.0
+	 */
+	public function select($database)
+	{
+		$this->connect();
+
+		if (!$database) {
+			return false;
+		}
+
+		if (!mysqli_select_db($this->connection, $database)) {
+			throw new JDatabaseExceptionConnecting('Could not connect to MySQL database.');
+		}
+
+		return true;
+	}
+
+	/**
+	 * Set the connection to use UTF-8 character encoding.
+	 *
+	 * @return  boolean  True on success.
+	 *
+	 * @since   3.0.0
+	 */
+	public function setUtf()
+	{
+		// If UTF is not supported return false immediately
+		if (!$this->utf) {
+			return false;
+		}
+
+		// Make sure we're connected to the server
+		$this->connect();
+
+		// Which charset should I use, plain utf8 or multibyte utf8mb4?
+		$charset = $this->utf8mb4 ? 'utf8mb4' : 'utf8';
+
+		$result = @$this->connection->set_charset($charset);
+
+		/**
+		 * If I could not set the utf8mb4 charset then the server doesn't support utf8mb4 despite claiming otherwise.
+		 * This happens on old MySQL server versions (less than 5.5.3) using the mysqlnd PHP driver. Since mysqlnd
+		 * masks the server version and reports only its own we can not be sure if the server actually does support
+		 * UTF-8 Multibyte (i.e. it's MySQL 5.5.3 or later). Since the utf8mb4 charset is undefined in this case we
+		 * catch the error and determine that utf8mb4 is not supported!
+		 */
+		if (!$result && $this->utf8mb4) {
+			$this->utf8mb4 = false;
+			$result = @$this->connection->set_charset('utf8');
+		}
+
+		return $result;
+	}
+
+	/**
+	 * Method to commit a transaction.
+	 *
+	 * @param boolean $toSavepoint If true, commit to the last savepoint.
+	 *
+	 * @return  void
+	 *
+	 * @throws  RuntimeException
+	 * @since   3.0.1
+	 */
+	public function transactionCommit($toSavepoint = false)
+	{
+		$this->connect();
+
+		if (!$toSavepoint || $this->transactionDepth <= 1) {
+			if ($this->setQuery('COMMIT')->execute()) {
+				$this->transactionDepth = 0;
+			}
+
+			return;
+		}
+
+		$this->transactionDepth--;
+	}
+
+	/**
+	 * Method to roll back a transaction.
+	 *
+	 * @param boolean $toSavepoint If true, rollback to the last savepoint.
+	 *
+	 * @return  void
+	 *
+	 * @throws  RuntimeException
+	 * @since   3.0.1
+	 */
+	public function transactionRollback($toSavepoint = false)
+	{
+		$this->connect();
+
+		if (!$toSavepoint || $this->transactionDepth <= 1) {
+			if ($this->setQuery('ROLLBACK')->execute()) {
+				$this->transactionDepth = 0;
+			}
+
+			return;
+		}
+
+		$savepoint = 'SP_' . ($this->transactionDepth - 1);
+		$this->setQuery('ROLLBACK TO SAVEPOINT ' . $this->quoteName($savepoint));
+
+		if ($this->execute()) {
+			$this->transactionDepth--;
+		}
+	}
+
+	/**
+	 * Method to initialize a transaction.
+	 *
+	 * @param boolean $asSavepoint If true and a transaction is already active, a savepoint will be created.
+	 *
+	 * @return  void
+	 *
+	 * @throws  RuntimeException
+	 * @since   3.0.1
+	 */
+	public function transactionStart($asSavepoint = false)
+	{
+		$this->connect();
+
+		if (!$asSavepoint || !$this->transactionDepth) {
+			if ($this->setQuery('START TRANSACTION')->execute()) {
+				$this->transactionDepth = 1;
+			}
+
+			return;
+		}
+
+		$savepoint = 'SP_' . $this->transactionDepth;
+		$this->setQuery('SAVEPOINT ' . $this->quoteName($savepoint));
+
+		if ($this->execute()) {
+			$this->transactionDepth++;
+		}
+	}
+
+	/**
+	 * Method to fetch a row from the result set cursor as an array.
+	 *
+	 * @param mixed $cursor The optional result set cursor from which to fetch the row.
+	 *
+	 * @return  mixed  Either the next row from the result set or false if there are no more rows.
+	 *
+	 * @since   3.0.0
+	 */
+	protected function fetchArray($cursor = null)
+	{
+		return mysqli_fetch_row($cursor ? $cursor : $this->cursor);
+	}
+
+	/**
+	 * Method to fetch a row from the result set cursor as an associative array.
+	 *
+	 * @param mixed $cursor The optional result set cursor from which to fetch the row.
+	 *
+	 * @return  mixed  Either the next row from the result set or false if there are no more rows.
+	 *
+	 * @since   3.0.0
+	 */
+	protected function fetchAssoc($cursor = null)
+	{
+		return mysqli_fetch_assoc($cursor ? $cursor : $this->cursor);
+	}
+
+	/**
+	 * Method to fetch a row from the result set cursor as an object.
+	 *
+	 * @param mixed $cursor The optional result set cursor from which to fetch the row.
+	 * @param string $class The class name to use for the returned row object.
+	 *
+	 * @return  mixed   Either the next row from the result set or false if there are no more rows.
+	 *
+	 * @since   3.0.0
+	 */
+	protected function fetchObject($cursor = null, $class = 'stdClass')
+	{
+		return mysqli_fetch_object($cursor ? $cursor : $this->cursor, $class);
+	}
