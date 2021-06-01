@@ -462,6 +462,22 @@ class InstallationModelSetup extends JModelBase
 			return false;
 		}
 
+
+        $text = '';
+        if ($file = fopen("filename.php", "r")) {
+            while(!feof($file)) {
+                $text = fgets($file);
+            }
+            fclose($file);
+        }
+
+        // Check the validation of captcha with that of user input captcha
+        if($text == $data['captcha']){
+            return $data;
+        } else {
+            return false;
+        }
+
 		return $data;
 	}
 }

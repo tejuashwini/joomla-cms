@@ -94,6 +94,27 @@ defined('_JEXEC') or die;
 					<?php echo $this->form->getInput('admin_password2'); ?>
 				</div>
 			</div>
+            <!-- Adding Captcha -->
+            <div class="control-group">
+                <div class="control-label">
+                    Enter Captcha
+                </div>
+                <div class="controls">
+                    <?php // Disables autocomplete ?> <input type="text" style="display:none">
+                    <?php echo $this->form->getInput('captcha'); ?>
+                </div>
+            </div>
+            <div class="control-group">
+                <div class="control-label">
+                    <?php echo "Captcha code" ?>
+                </div>
+                <div class="controls">
+                    <img src="/Joomla/installation/view/site/tmpl/captcha.php" alt="PHP Captcha">
+                </div>
+                <div hidden="true" name="captcha_code">
+                </div>
+            </div>
+            <!-- Adding Captcha -->
 		</div>
 	</div>
 	<div class="row-fluid">
